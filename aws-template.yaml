@@ -1,0 +1,462 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Infraestrutura AWS - Projeto de Pedidos (Yago Moreira)
+
+Resources:
+
+  ######################################
+  # IAM ROLES
+  ######################################
+  LambdaPreValidacaoRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lambda-prevalidacao-role-yagomoreira
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSSendMessageToPedidosFIFO-yagomoreira
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: arn:aws:sqs:REGION:ACCOUNT_ID:pedidos-fifo-queue-yagomoreira.fifo
+
+  LambdaValidacaoPedidosRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lambda-validacao-pedidos-role-yagomoreira
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSReadEventBridgePutPolicy-yagomoreira
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: arn:aws:sqs:REGION:ACCOUNT_ID:pedidos-fifo-queue-yagomoreira.fifo
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: arn:aws:events:REGION:ACCOUNT_ID:event-bus/pedidos-event-bus-yagomoreira
+
+  LambdaS3ValidationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lambda-s3-validation-role-yagomoreira
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSReadFromArquivosJsonQueueTrigger-yagomoreira
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: arn:aws:sqs:REGION:ACCOUNT_ID:s3-arquivos-json-queue-yagomoreira
+
+  LambdaProcessaPedidosRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lambda-processa-pedidos-role-yagomoreira
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSReadDynamoWritePedidosDB-yagomoreira
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: arn:aws:sqs:REGION:ACCOUNT_ID:pedidos-pendentes-queue-yagomoreira
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                Resource: arn:aws:dynamodb:REGION:ACCOUNT_ID:table/pedidos-db-yagomoreira
+
+  LambdaAlteraCancelaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lambda-altera-cancela-role-yagomoreira
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSAndDynamoPermissions-yagomoreira
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - arn:aws:sqs:REGION:ACCOUNT_ID:cancela-pedidos-queue-yagomoreira
+                  - arn:aws:sqs:REGION:ACCOUNT_ID:altera-pedidos-queue-yagomoreira
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                Resource: arn:aws:dynamodb:REGION:ACCOUNT_ID:table/pedidos-db-yagomoreira
+
+  ######################################
+  # SQS QUEUES
+  ######################################
+  PedidosFifoQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pedidos-fifo-queue-yagomoreira.fifo
+      FifoQueue: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PedidosFifoDLQ.Arn
+        maxReceiveCount: 3
+
+  PedidosFifoDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pedidos-fifo-dlq-yagomoreira.fifo
+      FifoQueue: true
+
+  S3ArquivosQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: s3-arquivos-json-queue-yagomoreira
+      VisibilityTimeout: 70
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt S3ArquivosDLQ.Arn
+        maxReceiveCount: 3
+
+  S3ArquivosDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: s3-arquivos-json-dlq-yagomoreira
+
+  PedidosPendentesQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pedidos-pendentes-queue-yagomoreira
+      VisibilityTimeout: 70
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PedidosPendentesDLQ.Arn
+        maxReceiveCount: 3
+
+  PedidosPendentesDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pedidos-pendentes-dlq-yagomoreira
+
+  CancelaPedidosQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: cancela-pedidos-queue-yagomoreira
+      VisibilityTimeout: 70
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CancelaPedidosDLQ.Arn
+        maxReceiveCount: 3
+
+  CancelaPedidosDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: cancela-pedidos-dlq-yagomoreira
+
+  AlteraPedidosQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: altera-pedidos-queue-yagomoreira
+      VisibilityTimeout: 70
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AlteraPedidosDLQ.Arn
+        maxReceiveCount: 3
+
+  AlteraPedidosDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: altera-pedidos-dlq-yagomoreira
+
+  ######################################
+  # DYNAMODB
+  ######################################
+  PedidosTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: pedidos-db-yagomoreira
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pedidoId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pedidoId
+          KeyType: HASH
+
+  ControleArquivosTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: controle-arquivos-historico-yagomoreira
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: nomeArquivo
+          AttributeType: S
+      KeySchema:
+        - AttributeName: nomeArquivo
+          KeyType: HASH
+
+  ######################################
+  # SNS
+  ######################################
+  NotificacaoErroArquivosTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: notificacao-erro-arquivos-yagomoreira
+
+  ######################################
+  # S3
+  ######################################
+  DataLakeArquivosBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: datalake-arquivos-yagomoreira
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".json"
+            Queue: !GetAtt S3ArquivosQueue.Arn
+
+  ######################################
+  # LAMBDAS
+  ######################################
+  PreValidacaoLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pre-validacao-lambda-yagomoreira
+      Runtime: python3.12
+      Role: !GetAtt LambdaPreValidacaoRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 60
+      Code:
+        S3Bucket: yago-s3-bucket
+        S3Key: lambda/pre-validacao-lambda.zip
+      Environment:
+        Variables:
+          QUEUE_URL: https://sqs.REGION.amazonaws.com/ACCOUNT_ID/pedidos-fifo-queue-yagomoreira.fifo
+
+  ValidacaoPedidosLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: validacao-pedidos-lambda-yagomoreira
+      Runtime: python3.12
+      Role: !GetAtt LambdaValidacaoPedidosRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 60
+      Code:
+        S3Bucket: yago-s3-bucket
+        S3Key: lambda/validacao-pedidos-lambda.zip
+      Environment:
+        Variables:
+          EVENT_BUS_NAME: pedidos-event-bus-yagomoreira
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PedidosFifoQueue.Arn
+            BatchSize: 1
+
+  ValidacaoS3ArquivosLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: validacao-s3-arquivos-lambda-yagomoreira
+      Runtime: python3.12
+      Role: !GetAtt LambdaS3ValidationRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 60
+      Code:
+        S3Bucket: yago-s3-bucket
+        S3Key: lambda/validacao-s3-arquivos-lambda.zip
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: controle-arquivos-historico-yagomoreira
+          SNS_TOPIC_ARN: !Ref NotificacaoErroArquivosTopic
+          SQS_FIFO_PEDIDOS_URL: https://sqs.REGION.amazonaws.com/ACCOUNT_ID/pedidos-fifo-queue-yagomoreira.fifo
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt S3ArquivosQueue.Arn
+            BatchSize: 1
+
+  ProcessaPedidosLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: processa-pedidos-lambda-yagomoreira
+      Runtime: python3.12
+      Role: !GetAtt LambdaProcessaPedidosRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 60
+      Code:
+        S3Bucket: yago-s3-bucket
+        S3Key: lambda/processa-pedidos-lambda.zip
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: pedidos-db-yagomoreira
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PedidosPendentesQueue.Arn
+            BatchSize: 1
+
+  CancelaPedidoLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: cancela-pedido-lambda-yagomoreira
+      Runtime: python3.12
+      Role: !GetAtt LambdaAlteraCancelaRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 60
+      Code:
+        S3Bucket: yago-s3-bucket
+        S3Key: lambda/cancela-pedido-lambda.zip
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: pedidos-db-yagomoreira
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt CancelaPedidosQueue.Arn
+            BatchSize: 1
+
+  AlteraPedidoLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: altera-pedido-lambda-yagomoreira
+      Runtime: python3.12
+      Role: !GetAtt LambdaAlteraCancelaRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 60
+      Code:
+        S3Bucket: yago-s3-bucket
+        S3Key: lambda/altera-pedido-lambda.zip
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: pedidos-db-yagomoreira
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AlteraPedidosQueue.Arn
+            BatchSize: 1
+
+  ######################################
+  # API GATEWAY
+  ######################################
+  PedidosApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: pedidos-api-yagomoreira
+
+  PedidosApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt PedidosApi.RootResourceId
+      PathPart: pedidos
+      RestApiId: !Ref PedidosApi
+
+  PedidosApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PedidosApi
+      ResourceId: !Ref PedidosApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: arn:aws:apigateway:REGION:lambda:path/2015-03-31/functions/arn:aws:lambda:REGION:ACCOUNT_ID:function:pre-validacao-lambda-yagomoreira/invocations
+
+  ######################################
+  # EVENTBRIDGE
+  ######################################
+  PedidosEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: pedidos-event-bus-yagomoreira
+
+  NovoPedidoValidadoRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: pedidos-event-bus-yagomoreira
+      Name: novo-pedido-validado-rule-yagomoreira
+      EventPattern:
+        source: ["lab.aula1.pedidos.validacao"]
+        detail-type: ["NovoPedidoValidado"]
+      Targets:
+        - Arn: !GetAtt PedidosPendentesQueue.Arn
+          Id: TargetPedidosPendentes
+
+  CancelaPedidoRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: pedidos-event-bus-yagomoreira
+      Name: cancela-pedido-rule-yagomoreira
+      EventPattern:
+        source: ["lab.aula4.operacoes"]
+        detail-type: ["CancelarPedido"]
+      Targets:
+        - Arn: !GetAtt CancelaPedidosQueue.Arn
+          Id: TargetCancela
+
+  AlteraPedidoRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: pedidos-event-bus-yagomoreira
+      Name: altera-pedido-rule-yagomoreira
+      EventPattern:
+        source: ["lab.aula4.operacoes"]
+        detail-type: ["AlterarPedido"]
+      Targets:
+        - Arn: !GetAtt AlteraPedidosQueue.Arn
+          Id: TargetAltera
